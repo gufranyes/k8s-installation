@@ -1,0 +1,59 @@
+#! /bin/bash
+
+sudo apt -y install net-tools jq git vim nano curl tree zip apt-transport-https iputils-arping tcpdump
+sudo apt clean && sudo apt -y autoremove --purge
+export KUBERNETES_VERSION_TO_INSTALL=1.21.3 && echo ${KUBERNETES_VERSION_TO_INSTALL}
+export VM_HOST_NAME=$(hostname) && echo ${VM_HOST_NAME}
+sudo systemctl disable --now ufw
+echo "192.168.100.10 lb-kubernetes.local" | sudo tee -a /etc/hosts
+sudo swapoff -a 
+sudo sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
+sudo rm /swap.img
+cat <<EOF | sudo tee /etc/modules-load.d/kubernetes.conf
+br_netfilter
+overlay
+EOF
+sudo modprobe overlay
+sudo modprobe br_netfilter
+sudo tee /etc/sysctl.d/kubernetes.conf<<EOF
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+net.ipv4.ip_forward = 1
+EOF
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+sudo tee /etc/apt/sources.list.d/kubernetes1.list<<EOF
+deb https://apt.kubernetes.io/ kubernetes-xenial main
+EOF
+curl -s https://packages.cloud.google.com/apt/dists/kubernetes-xenial/main/binary-amd64/Packages | grep Version | awk '{print $2}'
+sudo apt update
+sudo apt -yq install kubelet=${KUBERNETES_VERSION_TO_INSTALL}-00 kubeadm=${KUBERNETES_VERSION_TO_INSTALL}-00 kubectl=${KUBERNETES_VERSION_TO_INSTALL}-00
+sudo apt-mark hold kubelet kubeadm kubectl
+echo alias kc='kubectl --color=auto' >> ~/.bashrc
+source ~/.bashrc
+kubectl version --client && kubeadm version
+sudo apt-get remove docker docker-engine docker.io containerd runc
+sudo apt -y install docker.io
+sudo apt -y install kubernetes-cni
+sudo mkdir -p /etc/docker 
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+sudo systemctl restart docker
+sudo systemctl enable docker
+sudo apt clean && sudo apt -y autoremove --purge
+sudo systemctl enable kubelet
+sudo kubeadm config images pull --kubernetes-version=${KUBERNETES_VERSION_TO_INSTALL}
+sudo docker images
+sudo kubeadm init --config kubeadm-config.yaml --v=5
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+kubectl taint nodes --all node-role.kubernetes.io/master-
+
